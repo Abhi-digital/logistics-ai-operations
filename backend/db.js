@@ -64,6 +64,14 @@ async function initDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_events(created_at DESC);
+    CREATE TABLE IF NOT EXISTS operations_team (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      shift TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 }
 

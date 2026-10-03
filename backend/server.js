@@ -48,10 +48,16 @@ const seedUsers=[
   ['USR-OP','operator','Ravi Kumar','operator','Operator@123'],
   ['USR-VIEW','viewer','Sneha Rao','viewer','Viewer@123']
 ];
+const operationsTeam=[
+  ['TEAM-MORNING','Abhi','Morning Shift','Abhi128s'],
+  ['TEAM-AFTERNOON','Harsha','Afternoon Shift','harsha128s'],
+  ['TEAM-EVENING','Prasad','Evening Shift','prasad128s'],
+  ['TEAM-NIGHT','Channu','Night Shift','channu128s']
+];
 
 app.use('/api',(req,res,next)=>{
   req.user=currentUser(req);
-  if(req.method==='GET'||req.path==='/auth/login')return next();
+  if(req.method==='GET'||req.path==='/auth/login'||req.path==='/team/login')return next();
   if(!req.user)return res.status(401).json({error:'Authentication required'}); next();
 });
 
@@ -68,6 +74,8 @@ app.post('/api/auth/login',async(req,res)=>{
 });
 app.post('/api/auth/logout',async(req,res)=>{const token=(req.headers.authorization||'').replace(/^Bearer\s+/,'');const user=currentUser(req);if(token)sessions.delete(token);if(user)await recordDbAudit('auth.logout',user.username,user.id,{});res.json({message:'Logged out'});});
 app.get('/api/auth/me',(req,res)=>{const user=currentUser(req);if(!user)return res.status(401).json({error:'Authentication required'});res.json({data:user});});
+app.get('/api/team/members',async(_req,res)=>{const {rows}=await query('SELECT id,name,shift,active FROM operations_team ORDER BY CASE shift WHEN $1 THEN 1 WHEN $2 THEN 2 WHEN $3 THEN 3 WHEN $4 THEN 4 ELSE 5 END',["Morning Shift","Afternoon Shift","Evening Shift","Night Shift"]);res.json({data:rows});});
+app.post('/api/team/login',async(req,res)=>{try{const memberId=String(req.body?.memberId||'').trim();const password=String(req.body?.password||'');const {rows}=await query('SELECT id,name,shift,active,password_hash FROM operations_team WHERE id=$1',[memberId]);const member=rows[0];if(!member||!member.active||!verifyPassword(password,member.password_hash))return res.status(401).json({error:'Invalid team member or password'});const safe={id:member.id,name:member.name,shift:member.shift,role:'operations-team'};const token=tokenFor({id:member.id,username:member.name.toLowerCase(),role:'operations-team'});await recordDbAudit('team.login',member.name,member.id,{shift:member.shift});res.json({data:{token,member:safe},message:'Operations Team login successful'});}catch(err){res.status(500).json({error:'Database error',detail:err.message});}});
 app.get('/api/users',requireRole('admin'),async(_req,res)=>{const {rows}=await query('SELECT id,username,name,role,created_at as "createdAt" FROM users ORDER BY created_at');res.json({data:rows});});
 app.post('/api/users',requireRole('admin'),async(req,res)=>{const username=String(req.body?.username||'').trim().toLowerCase();const name=String(req.body?.name||'').trim();const role=String(req.body?.role||'viewer');const password=String(req.body?.password||'');if(!username||!name||!password||!['admin','operator','viewer'].includes(role))return res.status(400).json({error:'username, name, password and valid role are required'});const existing=await query('SELECT id FROM users WHERE username=$1',[username]);if(existing.rows[0])return res.status(409).json({error:'Username already exists'});const uid=id('USR');await query('INSERT INTO users (id,username,name,role,password_hash,created_at) VALUES ($1,$2,$3,$4,$5,NOW())',[uid,username,name,role,hashPassword(password)]);await recordDbAudit('user.create',req.user.username,uid,{username,role});res.status(201).json({data:{id:uid,username,name,role},message:'User created'});});
 
@@ -535,6 +543,10 @@ async function bootstrap(){
     if(!existing.rows[0]){
       await query('INSERT INTO users (id,username,name,role,password_hash,created_at) VALUES ($1,$2,$3,$4,$5,NOW())',[uid,username,name,role,hashPassword(password)]);
     }
+  }
+  for(const [tid,name,shift,password] of operationsTeam){
+    const existing=await query('SELECT id FROM operations_team WHERE id=$1',[tid]);
+    if(!existing.rows[0])await query('INSERT INTO operations_team (id,name,shift,password_hash,active,created_at) VALUES ($1,$2,$3,$4,TRUE,NOW())',[tid,name,shift,hashPassword(password)]);
   }
   await loadShipments();
   syncExceptions();
