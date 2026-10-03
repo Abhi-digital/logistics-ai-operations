@@ -1,5 +1,5 @@
 import {useEffect,useMemo,useState} from 'react';
-import {Activity,AlertTriangle,ArrowUpRight,Bell,Box,CheckCircle2,ChevronRight,Clock3,MapPin,PackageCheck,Search,Sparkles,Truck,XCircle,UserRound,ShieldAlert,BrainCircuit,Play,ThumbsDown,ThumbsUp,History,RefreshCw,Radio,Zap} from 'lucide-react';
+import {Activity,AlertTriangle,ArrowUpRight,Bell,Box,CheckCircle2,ChevronRight,Clock3,MapPin,PackageCheck,Search,Sparkles,Truck,X,XCircle,UserRound,ShieldAlert,BrainCircuit,Play,ThumbsDown,ThumbsUp,History,RefreshCw,Radio,Zap} from 'lucide-react';
 import './App.css';
 import './Goal6.css';
 
