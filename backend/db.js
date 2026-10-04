@@ -63,6 +63,20 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS idx_notifications_created_at ON notifications(created_at DESC);
+    CREATE TABLE IF NOT EXISTS automation_events (
+      id TEXT PRIMARY KEY,
+      shipment_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      event_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT,
+      notification_id TEXT,
+      details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(shipment_id,event_type,event_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_automation_events_created_at ON automation_events(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_automation_events_shipment ON automation_events(shipment_id);
     CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_events(created_at DESC);
     CREATE TABLE IF NOT EXISTS operations_team (
       id TEXT PRIMARY KEY,

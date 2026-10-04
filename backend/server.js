@@ -493,10 +493,52 @@ function customerProfile(shipment){
 }
 function generateCustomerMessage(s){
   const p=customerProfile(s);
-  if(s.status==='Delayed')return {subject:'Update on your shipment '+s.id,message:'Hello '+p.name+', your shipment '+s.id+' from '+s.origin+' to '+s.destination+' is delayed due to '+s.reason.toLowerCase()+'. Our operations team is investigating the issue. The latest ETA is '+new Date(s.eta).toLocaleString()+'. We will keep you updated.'};
-  if(s.status==='At Risk')return {subject:'Your shipment may arrive later than planned',message:'Hello '+p.name+', your shipment '+s.id+' is currently moving from '+s.origin+' to '+s.destination+', but it may miss the promised SLA. Our operations team is monitoring the route and will provide an updated ETA if needed.'};
+  if(s.status==='Delayed')return {subject:'Update on your shipment '+s.id,message:'Hello '+p.name+', your shipment '+s.id+' from '+s.origin+' to '+s.destination+' is delayed due to '+s.reason.toLowerCase()+'. Our AI operations automation detected the issue and notified our operations team. The latest ETA is '+new Date(s.eta).toLocaleString()+'. We will keep you updated.'};
+  if(s.status==='At Risk')return {subject:'Your shipment may arrive later than planned',message:'Hello '+p.name+', your shipment '+s.id+' is currently moving from '+s.origin+' to '+s.destination+', but it may miss the promised SLA. Reason: '+s.reason.toLowerCase()+'. Our AI operations automation is monitoring the route and will provide an updated ETA if needed.'};
   return {subject:'Shipment update for '+s.id,message:'Hello '+p.name+', your shipment '+s.id+' is currently '+s.status.toLowerCase()+'. Current location: '+s.currentLocation+'. Thank you for choosing RouteIQ.'};
 }
+
+/* Continuous customer/order automation. This worker runs independently of the dashboard UI. */
+let automationState={running:false,lastRun:null,lastScanned:0,lastNotified:0,lastOverdue:0};
+async function runCustomerAutomation(){
+  const started=Date.now();
+  let notified=0,overdue=0,scanned=0;
+  for(const s of shipments){
+    scanned++;
+    const nowMs=Date.now();
+    if(s.status!=='Delivered'&&new Date(s.eta).getTime()<=nowMs&&s.status!=='Delayed'){
+      const before={status:s.status,sla:s.sla,reason:s.reason};
+      s.status='Delayed'; s.sla='Breached'; s.priority='High'; s.reason='Delivery ETA exceeded'; s.updatedAt=now();
+      await persistShipment(s);
+      overdue++;
+      audit('automation.overdue','AI Automation',s.id,before,{status:s.status,sla:s.sla,reason:s.reason});
+      logActivity('automation.overdue','AI automation marked '+s.id+' overdue',{shipmentId:s.id,reason:s.reason});
+    }
+    if(s.status!=='Delayed'&&s.status!=='At Risk')continue;
+    const eventKey=s.status+'|'+s.updatedAt+'|'+s.reason;
+    const eventId=id('AUTO');
+    const event=await query('INSERT INTO automation_events (id,shipment_id,event_type,event_key,status,reason,details,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW()) ON CONFLICT (shipment_id,event_type,event_key) DO NOTHING RETURNING id',[eventId,s.id,'delay_detected',eventKey,'Detected',s.reason,{status:s.status,eta:s.eta,carrier:s.carrier}]);
+    if(!event.rows[0])continue;
+    const p=customerProfile(s),copy=generateCustomerMessage(s),nid=id('NTF'),sent=now();
+    await query('INSERT INTO notifications (id,shipment_id,channel,customer_name,customer_contact,subject,message,status,created_by,sent_by,created_at,updated_at,sent_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW(),$11)',[nid,s.id,'AI Automation',p.name,p.contact,copy.subject,copy.message,'Sent','AI Automation','AI Automation',sent]);
+    await query('UPDATE automation_events SET status=$1,notification_id=$2 WHERE id=$3',['Customer Notified',nid,eventId]);
+    await recordDbAudit('automation.customer_notified','AI Automation',nid,{shipmentId:s.id,reason:s.reason,channel:'AI Automation'});
+    logActivity('automation.customer_notified','Customer automatically notified for '+s.id,{shipmentId:s.id,notificationId:nid,reason:s.reason});
+    notified++;
+  }
+  syncExceptions();
+  automationState={running:true,lastRun:now(),lastScanned:scanned,lastNotified:notified,lastOverdue:overdue,durationMs:Date.now()-started};
+  return automationState;
+}
+app.get('/api/automation/status',async(_req,res)=>{
+  const {rows}=await query('SELECT COUNT(*)::int AS events, COUNT(*) FILTER (WHERE status=\'Customer Notified\')::int AS notified, COUNT(*) FILTER (WHERE event_type=\'delay_detected\')::int AS delays FROM automation_events');
+  const {rows:pending}=await query('SELECT COUNT(*)::int AS count FROM shipments WHERE status IN (\'Delayed\',\'At Risk\')');
+  res.json({data:{...automationState,totalDelayEvents:rows[0]?.delays||0,totalAutomatedNotifications:rows[0]?.notified||0,activeDelayedOrAtRisk:pending[0]?.count||0,intervalSeconds:15,mode:'continuous-background'}});
+});
+app.get('/api/automation/history',async(_req,res)=>{
+  const {rows}=await query('SELECT a.id,a.shipment_id AS "shipmentId",a.event_type AS "eventType",a.status,a.reason,a.created_at AS "createdAt",a.notification_id AS "notificationId",n.customer_name AS "customerName",n.subject,n.message,n.channel,n.sent_at AS "sentAt",s.status AS "currentStatus",s.current_location AS "currentLocation",s.eta,s.origin,s.destination FROM automation_events a LEFT JOIN notifications n ON n.id=a.notification_id LEFT JOIN shipments s ON s.id=a.shipment_id ORDER BY a.created_at DESC LIMIT 100');
+  res.json({data:rows,total:rows.length});
+});
 app.get('/api/notifications',async(req,res)=>{
   const {rows}=await query('SELECT id,shipment_id AS "shipmentId",channel,customer_name AS "customerName",customer_contact AS "customerContact",subject,message,status,created_by AS "createdBy",approved_by AS "approvedBy",sent_by AS "sentBy",created_at AS "createdAt",updated_at AS "updatedAt",sent_at AS "sentAt" FROM notifications ORDER BY created_at DESC LIMIT 100');
   res.json({data:rows,total:rows.length});
@@ -551,6 +593,8 @@ async function bootstrap(){
   await loadShipments();
   syncExceptions();
   runAIAnalysis();
-  app.listen(PORT,()=>console.log(`Logistics API running on http://localhost:${PORT} (PostgreSQL)`));
+  await runCustomerAutomation();
+  setInterval(()=>runCustomerAutomation().catch(err=>console.error('Customer automation error:',err.message)),15000);
+  app.listen(PORT,()=>console.log(`Logistics API running on http://localhost:${PORT} (PostgreSQL + AI automation)`));
 }
 bootstrap().catch(err=>{console.error('Failed to start RouteIQ:',err);process.exit(1);});
